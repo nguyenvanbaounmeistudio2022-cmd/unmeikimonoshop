@@ -23,7 +23,7 @@
   --primary-hover:#828fff;
   --primary-focus:#5e69d1;
   --success:   #27a644;
-  --gold:      var(--gold);  /* kimono accent – used only for logo & hero tag */
+  --gold:      #c9a84c;  /* kimono accent – used only for logo & hero tag */
 }
 
 body {
@@ -625,11 +625,13 @@ async function saveIndex(){
   try{ await dbPut('meta',{key:'index', value:JSON.stringify(state.index)}); }catch(e){ toast('Lỗi lưu danh mục'); throw e; }
 }
 async function loadItem(id){
-  if(state.itemCache[id]) return state.itemCache[id];
+  // Luôn ưu tiên DB (đã lưu thay đổi) hơn cache/seed
   try{
     const rec = await dbGet('items', id);
     if(rec){ state.itemCache[id]=rec; return rec; }
   }catch(e){}
+  // Fallback: seed (chỉ khi chưa có trong DB)
+  if(state.itemCache[id]) return state.itemCache[id];
   const seed = SEED_ITEMS.find(x=>x.id===id);
   if(seed){ state.itemCache[id]=seed; return seed; }
   return null;
@@ -1002,11 +1004,19 @@ async function handleFiles(e){
     for(const f of files){
       const origKB = Math.round(f.size/1024);
       const origLabel = origKB>=1024 ? (origKB/1024).toFixed(1)+'MB' : origKB+'KB';
-      toast(`⏳ Đang upload ${origLabel} lên Cloudinary…`);
+      // Nén ảnh trước (bất kể dùng Cloudinary hay base64)
+      const needsCompress = f.size > 500*1024; // > 500KB thì báo đang nén
+      if(needsCompress) toast(`🗜️ Đang nén ảnh ${origLabel}…`);
       const url = await processImageFile(f, true);
       state.formImages.push(url);
       const isCloud = url.startsWith('https://res.cloudinary');
-      toast(isCloud ? `✅ Upload Cloudinary thành công!` : `✅ Lưu ảnh thành công`);
+      if(isCloud){
+        toast(`✅ Upload Cloudinary thành công! (${origLabel} → tối ưu)`);
+      } else {
+        const compKB = Math.round((url.length*0.75)/1024);
+        const compLabel = compKB>=1024?(compKB/1024).toFixed(1)+'MB':compKB+'KB';
+        toast(`✅ Ảnh đã nén: ${origLabel} → ${compLabel}`);
+      }
     }
   }catch(err){ toast('Lỗi upload: '+(err.message||'')); }
   renderThumbs(); updateUploadBox();
@@ -1345,13 +1355,12 @@ async function init(){
   try{ await Promise.all([loadSettings(), loadIndex()]); }
   catch(e){ console.error(e); }
 
-  // Nếu trống -> load 52 mẫu từ seed ngay vào memory
+  // Nếu trống -> load 52 mẫu từ seed vào index (nhưng KHÔNG pre-populate itemCache)
+  // Để loadItem() luôn check DB trước, rồi mới fallback sang SEED_ITEMS
   if(state.index.length === 0){
     state.index = SEED_INDEX;
-    for(const item of SEED_ITEMS){ state.itemCache[item.id] = item; }
     const s = JSON.parse(JSON.stringify(SEED_SETTINGS_DEFAULTS));
     state.settings = {...state.settings, ...s};
-    // Không lưu SEED vào localStorage — dùng memory cache thôi
   }
 
   state.loaded = true;
