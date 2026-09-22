@@ -1014,7 +1014,7 @@ async function openDetail(id){
   document.getElementById('detCart').addEventListener('click',()=>{ state.cart[id]=!state.cart[id]; updateCartBadge(); openDetail(id); if(state.tab==='shop') renderShop(); });
   document.querySelectorAll('.status-btn').forEach(btn=>{ btn.addEventListener('click',async()=>{ if(!state.unlocked){ toast('Cần mở khoá admin trước'); return; } meta.status=btn.dataset.s; if(meta.status!=='available') delete state.cart[id]; await saveIndex(); openDetail(id); if(state.tab==='shop') renderShop(); }); });
   document.getElementById('detEdit').addEventListener('click',()=>{ if(!state.unlocked){ toast('Cần mở khoá admin trước'); return; } mroot.innerHTML=''; startEdit(id); });
-  document.getElementById('detDel').addEventListener('click',()=>{ if(!state.unlocked){ toast('Cần mở khoá admin trước'); return; } confirmModal(`Xoá mẫu "${meta.code||meta.name}"?`,async()=>{ state.index=state.index.filter(x=>x.id!==id); await saveIndex(); await deleteItemDB(id); delete state.cart[id]; updateCartBadge(); toast('Đã xoá'); mroot.innerHTML=''; render(); }); });
+  document.getElementById('detDel').addEventListener('click',()=>{ if(!state.unlocked){ toast('Cần mở khoá admin trước'); return; } confirmModal(`Xoá mẫu "${meta.code||meta.name}"?`,async()=>{ state.index=state.index.filter(x=>x.id!==id); await saveIndex(); await deleteItemDB(id); delete state.cart[id]; updateCartBadge(); toast('Đã xoá'); ghPushAll(); mroot.innerHTML=''; render(); }); });
 }
 
 function confirmModal(msg,onYes){
@@ -1176,6 +1176,7 @@ async function onSave(){
     if(idx>=0) state.index[idx]=meta; else state.index.push(meta);
     await saveIndex();
     toast(state.editingId?'✅ Đã lưu thay đổi':'✅ Đã thêm mẫu mới!');
+    ghPushAll(); // tự động đồng bộ GitHub
     state.editingId=null; state.formImages=[]; setTab('shop');
   }catch(err){
     console.error('Save error:', err);
@@ -1325,6 +1326,7 @@ function renderManage(){
     <div class="info-banner">📋 Sửa giá hàng loạt, đổi thứ tự hiển thị (↑↓). Bấm vào ảnh 📷 để thay ảnh ngay. Bấm "Lưu tất cả" sau khi sửa xong.</div>
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
       <button class="btn-primary" id="uploadCloudBtn" style="flex:1;min-width:160px;background:#e67e22;">☁️ Upload ảnh lên Cloudinary</button>
+      <button class="btn-primary" id="syncBtn" style="flex:1;min-width:140px;background:#2d7a4f;">🔄 Đồng bộ GitHub</button>
       <button class="btn-primary" id="expBtn" style="flex:1;min-width:120px;">⬇ Sao lưu (JSON)</button>
       <button class="btn-secondary" id="impBtn" style="flex:1;min-width:120px;">⬆ Nhập từ file</button>
       <button class="btn-reset" id="resetBtn" style="flex:1;min-width:100px;">🗑 Xóa tất cả</button>
@@ -1355,7 +1357,7 @@ function renderManage(){
   renderMgRows(state.index);
   initBulkUpload();
   document.getElementById('mgSearch').addEventListener('input',e=>{ const q=e.target.value.toLowerCase(); renderMgRows(state.index.filter(it=>(it.code||'').toLowerCase().includes(q)||(it.name||'').toLowerCase().includes(q))); });
-  document.getElementById('mgSave').addEventListener('click',async()=>{ document.querySelectorAll('.mg-price').forEach(inp=>{ const it=state.index.find(x=>x.id===inp.dataset.id); if(it) it.priceJPY=inp.value===''?null:parseFloat(inp.value); }); document.querySelectorAll('.mg-status').forEach(sel=>{ const it=state.index.find(x=>x.id===sel.dataset.id); if(it) it.status=sel.value; }); try{ await saveIndex(); toast('Đã lưu'); render(); }catch(e){ toast('Lỗi lưu'); } });
+  document.getElementById('mgSave').addEventListener('click',async()=>{ document.querySelectorAll('.mg-price').forEach(inp=>{ const it=state.index.find(x=>x.id===inp.dataset.id); if(it) it.priceJPY=inp.value===''?null:parseFloat(inp.value); }); document.querySelectorAll('.mg-status').forEach(sel=>{ const it=state.index.find(x=>x.id===sel.dataset.id); if(it) it.status=sel.value; }); try{ await saveIndex(); toast('Đã lưu'); ghPushAll(); render(); }catch(e){ toast('Lỗi lưu'); } });
   document.getElementById('uploadCloudBtn').addEventListener('click', async()=>{
     const btn = document.getElementById('uploadCloudBtn');
     const progress = document.getElementById('uploadProgress');
@@ -1414,6 +1416,22 @@ function renderManage(){
     } else {
       toast(`⚠️ Upload xong nhưng ${errors} ảnh bị lỗi. Thử lại lần nữa.`);
     }
+  });
+  document.getElementById('syncBtn').addEventListener('click', async()=>{
+    const btn = document.getElementById('syncBtn');
+    btn.disabled = true; btn.textContent = '⏳ Đang đồng bộ…';
+    try{
+      const allItems = await Promise.all(state.index.map(it => loadItem(it.id)));
+      const payload = {
+        index: state.index,
+        items: allItems.filter(Boolean),
+        settings: {...state.settings, adminPin: undefined}
+      };
+      const ok = await ghSave(payload);
+      if(ok){ toast('✅ Đồng bộ GitHub thành công! Khách thấy dữ liệu mới ngay.'); }
+      else { toast('❌ Lỗi đồng bộ. Thử lại sau.'); }
+    }catch(e){ toast('❌ Lỗi: '+(e.message||'')); }
+    btn.disabled = false; btn.textContent = '🔄 Đồng bộ GitHub';
   });
   document.getElementById('expBtn').addEventListener('click',async()=>{ const btn=document.getElementById('expBtn'); btn.disabled=true; btn.textContent='Đang tải…'; try{ const items=await Promise.all(state.index.map(it=>loadItem(it.id))); const blob=new Blob([JSON.stringify({settings:state.settings,index:state.index,items:items.filter(Boolean)},null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='kimono-backup-'+new Date().toISOString().slice(0,10)+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); toast('Đã tải file sao lưu'); }catch(e){ toast('Lỗi sao lưu'); } btn.disabled=false; btn.textContent='⬇ Sao lưu (JSON)'; });
   document.getElementById('impBtn').addEventListener('click',()=>document.getElementById('impIn').click());
