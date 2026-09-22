@@ -1328,12 +1328,13 @@ function renderManage(){
   root.innerHTML=`<div class="admin-wrap"><h2>Quản lý danh mục</h2>
     <div class="info-banner">📋 Sửa giá hàng loạt, đổi thứ tự hiển thị (↑↓). Bấm vào ảnh 📷 để thay ảnh ngay. Bấm "Lưu tất cả" sau khi sửa xong.</div>
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
-      <button class="btn-primary" id="syncBtn" style="flex:1;min-width:140px;background:#2d7a4f;">☁️ Đồng bộ GitHub</button>
+      <button class="btn-primary" id="uploadCloudBtn" style="flex:1;min-width:160px;background:#e67e22;">☁️ Upload ảnh lên Cloudinary</button>
       <button class="btn-primary" id="expBtn" style="flex:1;min-width:120px;">⬇ Sao lưu (JSON)</button>
       <button class="btn-secondary" id="impBtn" style="flex:1;min-width:120px;">⬆ Nhập từ file</button>
       <button class="btn-reset" id="resetBtn" style="flex:1;min-width:100px;">🗑 Xóa tất cả</button>
       <input type="file" id="impIn" accept="application/json" style="display:none">
     </div>
+    <div id="uploadProgress" style="display:none;margin-bottom:16px;padding:12px;background:var(--surface-2);border-radius:8px;font-size:13px;"></div>
     <div class="bulk-upload-panel" id="bulkPanel">
       <div class="bulk-header" id="bulkToggle">📦 Upload ảnh hàng loạt cho nhiều mẫu <span id="bulkArrow">▼</span></div>
       <div class="bulk-body" id="bulkBody" style="display:none">
@@ -1359,22 +1360,64 @@ function renderManage(){
   initBulkUpload();
   document.getElementById('mgSearch').addEventListener('input',e=>{ const q=e.target.value.toLowerCase(); renderMgRows(state.index.filter(it=>(it.code||'').toLowerCase().includes(q)||(it.name||'').toLowerCase().includes(q))); });
   document.getElementById('mgSave').addEventListener('click',async()=>{ document.querySelectorAll('.mg-price').forEach(inp=>{ const it=state.index.find(x=>x.id===inp.dataset.id); if(it) it.priceJPY=inp.value===''?null:parseFloat(inp.value); }); document.querySelectorAll('.mg-status').forEach(sel=>{ const it=state.index.find(x=>x.id===sel.dataset.id); if(it) it.status=sel.value; }); try{ await saveIndex(); toast('Đã lưu'); render(); }catch(e){ toast('Lỗi lưu'); } });
-  document.getElementById('syncBtn').addEventListener('click', async()=>{
-    const btn = document.getElementById('syncBtn');
-    btn.disabled = true; btn.textContent = '⏳ Đang đồng bộ…';
-    try{
-      // Load toàn bộ items từ IndexedDB
-      const allItems = await Promise.all(state.index.map(it => loadItem(it.id)));
-      const payload = {
-        index: state.index,
-        items: allItems.filter(Boolean),
-        settings: {...state.settings, adminPin: undefined}
-      };
-      const ok = await ghSave(payload);
-      if(ok){ toast('✅ Đồng bộ GitHub thành công! Khách hàng sẽ thấy dữ liệu mới ngay.'); }
-      else { toast('❌ Lỗi đồng bộ GitHub. Kiểm tra kết nối mạng.'); }
-    }catch(e){ toast('❌ Lỗi: '+(e.message||'')); }
-    btn.disabled = false; btn.textContent = '☁️ Đồng bộ GitHub';
+  document.getElementById('uploadCloudBtn').addEventListener('click', async()=>{
+    const btn = document.getElementById('uploadCloudBtn');
+    const progress = document.getElementById('uploadProgress');
+    
+    // Đếm ảnh base64 cần upload
+    const allItems = await Promise.all(state.index.map(it => loadItem(it.id)));
+    const toUpload = allItems.filter(item => item && item.images && 
+      item.images.some(img => img.startsWith('data:')));
+    
+    if(toUpload.length === 0){
+      toast('✅ Tất cả ảnh đã là Cloudinary URL rồi!');
+      return;
+    }
+    
+    if(!confirm(`Sẽ upload ảnh của ${toUpload.length} mẫu lên Cloudinary. Quá trình này có thể mất vài phút. Tiếp tục?`)) return;
+    
+    btn.disabled = true;
+    progress.style.display = 'block';
+    
+    let done = 0, errors = 0;
+    const CLOUD = 'qfba57kr';
+    const PRESET = 'kimono_upload';
+    const URL_UP = `https://api.cloudinary.com/v1_1/${CLOUD}/image/upload`;
+    
+    for(const item of toUpload){
+      const newImgs = [];
+      for(const img of item.images){
+        if(img.startsWith('https://')){
+          newImgs.push(img); // giữ nguyên Cloudinary
+        } else if(img.startsWith('data:')){
+          progress.innerHTML = `⏳ Đang upload ảnh ${item.code} (${done+1}/${toUpload.length})…`;
+          try{
+            const fd = new FormData();
+            fd.append('file', img);
+            fd.append('upload_preset', PRESET);
+            fd.append('folder', 'kimono');
+            const res = await fetch(URL_UP, {method:'POST', body:fd});
+            const data = await res.json();
+            if(data.secure_url){ newImgs.push(data.secure_url); }
+            else { newImgs.push(img); errors++; } // giữ base64 nếu lỗi
+          }catch(e){ newImgs.push(img); errors++; }
+        }
+      }
+      // Cập nhật item với URLs mới
+      item.images = newImgs;
+      await saveItem(item);
+      done++;
+    }
+    
+    await saveIndex();
+    progress.style.display = 'none';
+    btn.disabled = false;
+    
+    if(errors === 0){
+      toast(`✅ Upload xong ${done} mẫu! Bây giờ bấm "Sao lưu (JSON)" và gửi cho dev để build lại web.`);
+    } else {
+      toast(`⚠️ Upload xong nhưng ${errors} ảnh bị lỗi. Thử lại lần nữa.`);
+    }
   });
   document.getElementById('expBtn').addEventListener('click',async()=>{ const btn=document.getElementById('expBtn'); btn.disabled=true; btn.textContent='Đang tải…'; try{ const items=await Promise.all(state.index.map(it=>loadItem(it.id))); const blob=new Blob([JSON.stringify({settings:state.settings,index:state.index,items:items.filter(Boolean)},null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='kimono-backup-'+new Date().toISOString().slice(0,10)+'.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); toast('Đã tải file sao lưu'); }catch(e){ toast('Lỗi sao lưu'); } btn.disabled=false; btn.textContent='⬇ Sao lưu (JSON)'; });
   document.getElementById('impBtn').addEventListener('click',()=>document.getElementById('impIn').click());
